@@ -117,7 +117,7 @@ class MainActivity : Activity() {
         root.addView(setup, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(26) })
         root.addView(text("שליחה אוטומטית מופעלת לאחר החיבור ואישור ההרשאה. אין צורך לפתוח את האפליקציה לכל הודעה.", 13f, muted),
             LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(24) })
-        setContentView(ScrollView(this).apply { fillViewport = true; addView(root) })
+		setContentView(ScrollView(this).apply { isFillViewport = true; addView(root) })
         refresh()
     }
 
