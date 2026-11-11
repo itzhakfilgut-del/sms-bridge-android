@@ -1,0 +1,9 @@
+# This is a DIFFERENT Worker from whatsapp-sms-bridge.
+name = "sms-bridge-staging"
+main = "index.js"
+compatibility_date = "2026-11-11"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "sms-bridge-staging"
+database_id = "REPLACE_WITH_STAGING_DB_ID"
