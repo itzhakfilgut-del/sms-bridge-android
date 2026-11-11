@@ -27,7 +27,9 @@ jobs:
             echo "$FIREBASE_JSON_BASE64" | base64 -d > app/google-services.json
           fi
       - name: Build debug APK
-        run: gradle :app:assembleDebug --no-daemon
+        env:
+          BRIDGE_SERVER_URL: ${{ vars.BRIDGE_SERVER_URL }}
+        run: gradle :app:assembleDebug --no-daemon -PBRIDGE_SERVER_URL="$BRIDGE_SERVER_URL"
       - uses: actions/upload-artifact@v4
         with:
           name: SMSBridge-debug-apk

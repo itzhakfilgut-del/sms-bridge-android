@@ -5,6 +5,7 @@ plugins {
 if (file("google-services.json").exists()) {
     apply(plugin = "com.google.gms.google-services")
 }
+val bridgeServerUrl = providers.gradleProperty("BRIDGE_SERVER_URL").orElse("").get()
 android {
     namespace = "il.smsbridge.app"
     compileSdk = 35
@@ -12,8 +13,9 @@ android {
         applicationId = "il.smsbridge.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.2.0"
+        versionCode = 2
+        versionName = "0.3.0"
+        buildConfigField("String", "BRIDGE_SERVER_URL", "\"${bridgeServerUrl}\"")
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

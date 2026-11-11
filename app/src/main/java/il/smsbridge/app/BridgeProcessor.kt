@@ -21,7 +21,7 @@ object BridgeProcessor {
         if (!BridgeStore.enabled(ctx)) return
         if (ctx.checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) return
         if (!ctx.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_MESSAGING)) return
-        val subscription = BridgeStore.sim(ctx)
+        val subscription = SubscriptionManager.getDefaultSmsSubscriptionId()
         if (subscription == SubscriptionManager.INVALID_SUBSCRIPTION_ID) return
         val jobs = BridgeApi.get(ctx, "/device/jobs").optJSONArray("jobs") ?: return
         for (i in 0 until jobs.length()) {

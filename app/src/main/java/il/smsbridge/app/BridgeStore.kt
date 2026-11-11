@@ -11,7 +11,7 @@ object BridgeStore {
     fun enabled(ctx: Context) = prefs(ctx).getBoolean("enabled", false)
     fun sim(ctx: Context) = prefs(ctx).getInt("sim", SubscriptionManager.INVALID_SUBSCRIPTION_ID)
     fun savePair(ctx: Context, base: String, token: String, sender: String) = prefs(ctx).edit()
-        .putString("base", base).putString("token", token).putString("sender", sender).putBoolean("enabled", false).apply()
+        .putString("base", base).putString("token", token).putString("sender", sender).putBoolean("enabled", true).apply()
     fun setEnabled(ctx: Context, enabled: Boolean) = prefs(ctx).edit().putBoolean("enabled", enabled).apply()
     fun setSim(ctx: Context, subscriptionId: Int) = prefs(ctx).edit().putInt("sim", subscriptionId).apply()
     fun fcmToken(ctx: Context) = prefs(ctx).getString("fcm", "") ?: ""

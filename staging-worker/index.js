@@ -12,23 +12,14 @@ export default {async fetch(request,env){
  if(path==='/health')return json({ok:true,service:'sms-bridge-staging'});
  if(!env.DB)return json({error:'missing DB'},503);
  try{
-  if(path==='/admin/pair-code' && request.method==='POST'){
-   if(!isAdmin(request,env))return json({error:'unauthorized'},401);
+  // Trust-based registration requested for private installation: phone number alone identifies sender.
+  // Do NOT expose this staging endpoint to untrusted clients or use it on the live Worker.
+  if(path==='/device/register' && request.method==='POST'){
    let d=await body(request);let sender=String(d?.sender||'').trim();
-   if(!/^\d{8,16}(@c\.us)?$/.test(sender))return json({error:'invalid sender'},400);
-   let code=Array.from(crypto.getRandomValues(new Uint8Array(12))).map(x=>x.toString(16).padStart(2,'0')).join('');
-   await env.DB.prepare('INSERT INTO pairing_codes(code_hash,sender,expires_at) VALUES(?,?,?)').bind(await hash(code),sender,Date.now()+600000).run();
-   return json({code,sender,expiresInSeconds:600});
-  }
-  if(path==='/device/pair' && request.method==='POST'){
-   let d=await body(request);let code=String(d?.code||'');if(code.length<16)return json({error:'invalid code'},400);
-   let codeHash=await hash(code),now=Date.now();
-   // Atomic conditional consumption: one client wins the code.
-   let consumed=await env.DB.prepare('DELETE FROM pairing_codes WHERE code_hash=? AND expires_at>? RETURNING sender').bind(codeHash,now).first();
-   if(!consumed)return json({error:'invalid or expired code'},403);
+   if(!/^972[0-9]{8,10}$/.test(sender))return json({error:'invalid sender'},400);
    let token=Array.from(crypto.getRandomValues(new Uint8Array(32))).map(x=>x.toString(16).padStart(2,'0')).join('');
-   await env.DB.prepare('INSERT INTO devices(id,sender,token_hash,enabled,created_at) VALUES(?,?,?,?,?)').bind(uid(),consumed.sender,await hash(token),0,now).run();
-   return json({token,sender:consumed.sender});
+   await env.DB.prepare('INSERT INTO devices(id,sender,token_hash,enabled,created_at) VALUES(?,?,?,?,?)').bind(uid(),sender,await hash(token),1,Date.now()).run();
+   return json({token,sender});
   }
   if(path==='/admin/job' && request.method==='POST'){
    if(!isAdmin(request,env))return json({error:'unauthorized'},401);
