@@ -13,54 +13,135 @@ import android.telephony.SubscriptionManager
 import org.json.JSONObject
 
 object BridgeProcessor {
-    fun sync(ctx: Context) {
-        if (BridgeStore.token(ctx).isBlank()) return
-        val fcm = BridgeStore.fcmToken(ctx)
-        try { BridgeApi.authPost(ctx, "/device/heartbeat", JSONObject().put("fcmToken", fcm).put("enabled", BridgeStore.enabled(ctx))) }
-        catch (_: Exception) { return /* no job sent when heartbeat fails */ }
-        if (!BridgeStore.enabled(ctx)) return
-        if (ctx.checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) return
-        if (!ctx.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_MESSAGING)) return
-        val subscription = SubscriptionManager.getDefaultSmsSubscriptionId()
-        if (subscription == SubscriptionManager.INVALID_SUBSCRIPTION_ID) return
-        val jobs = BridgeApi.get(ctx, "/device/jobs").optJSONArray("jobs") ?: return
-        for (i in 0 until jobs.length()) {
-            val job = jobs.optJSONObject(i) ?: continue
-            val id = job.optString("id")
-            if (id.isBlank()) continue
-            val phone = job.optString("phone")
-            val msg = job.optString("text")
-            if (!phone.matches(Regex("\\+?[0-9]{9,15}")) || msg.isBlank()) continue
-            // Server atomically leases exactly one recipient at a time before this POST.
-            val claim = BridgeApi.authPost(ctx, "/device/claim", JSONObject().put("id", id))
-            if (!claim.optBoolean("claimed")) continue
+    // Serialize simultaneous FCM/periodic work inside this app process.
+    // D1's atomic /device/claim remains the cross-process duplicate barrier.
+    @Synchronized
+    fun sync(ctx: Context): Boolean {
+        if (BridgeStore.token(ctx).isBlank()) return true
+
+        val prefs = ctx.getSharedPreferences("bridge_sync_diag", Context.MODE_PRIVATE)
+        var stage = "HEARTBEAT"
+        var seen = 0
+        var claimed = 0
+        var dispatched = 0
+
+        // Preserve a diagnostic locally if the network is down, and replay it when possible.
+        fun sendDiag(event: JSONObject) {
+            prefs.edit().putString("pending", event.toString()).apply()
             try {
-                val sms = if (Build.VERSION.SDK_INT >= 31) {
-                    ctx.getSystemService(SmsManager::class.java).createForSubscriptionId(subscription)
-                } else {
-                    @Suppress("DEPRECATION")
-                    SmsManager.getSmsManagerForSubscriptionId(subscription)
-                }
-                val parts = sms.divideMessage(msg)
-                val intents = ArrayList<PendingIntent>()
-                for (part in parts.indices) {
-                    val sentIntent = Intent(ctx, SentReceiver::class.java).apply {
-                        putExtra("jobId", id)
-                        putExtra("part", part)
-                        putExtra("total", parts.size)
-                        putExtra("token", BridgeStore.token(ctx))
-                    }
-                    intents.add(PendingIntent.getBroadcast(ctx, (id + ":" + part).hashCode(), sentIntent,
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
-                }
-                sms.sendMultipartTextMessage(phone, null, parts, intents, null)
-                // Don't report sent here: only SentReceiver receives modem result.
-                BridgeApi.authPost(ctx, "/device/dispatched", JSONObject().put("id", id))
-            } catch (e: Exception) {
-                // A synchronous exception may still be ambiguous. Never auto-fallback here.
-                try { BridgeApi.authPost(ctx, "/device/result", JSONObject().put("id", id).put("status", "UNKNOWN")) }
-                catch (_: Exception) { }
+                BridgeApi.authPost(ctx, "/device/diagnostic", event)
+                prefs.edit().remove("pending").apply()
+            } catch (_: Exception) {
+                // Diagnostic delivery must never interrupt SMS delivery.
             }
+        }
+        fun report(result: String, detail: String = "") {
+            sendDiag(JSONObject()
+                .put("at", System.currentTimeMillis())
+                .put("stage", stage)
+                .put("result", result)
+                .put("detail", detail.take(220))
+                .put("seen", seen)
+                .put("claimed", claimed)
+                .put("dispatched", dispatched))
+        }
+
+        prefs.getString("pending", null)?.let { raw ->
+            try {
+                BridgeApi.authPost(ctx, "/device/diagnostic", JSONObject(raw))
+                prefs.edit().remove("pending").apply()
+            } catch (_: Exception) { }
+        }
+
+        try {
+            // A successful heartbeat proves connectivity, not SMS capability.
+            BridgeApi.authPost(ctx, "/device/heartbeat", JSONObject()
+                .put("fcmToken", BridgeStore.fcmToken(ctx))
+                .put("enabled", BridgeStore.enabled(ctx)))
+
+            stage = "PRECHECK"
+            if (!BridgeStore.enabled(ctx)) {
+                report("BLOCKED", "App disabled")
+                return true
+            }
+            if (ctx.checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED) {
+                report("BLOCKED", "SEND_SMS permission missing")
+                return true
+            }
+            if (!ctx.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_MESSAGING)) {
+                report("BLOCKED", "FEATURE_TELEPHONY_MESSAGING missing")
+                return true
+            }
+            val subscription = SubscriptionManager.getDefaultSmsSubscriptionId()
+            if (subscription == SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                report("BLOCKED", "Default SMS SIM missing")
+                return true
+            }
+
+            stage = "GET_JOBS"
+            val jobs = BridgeApi.get(ctx, "/device/jobs").optJSONArray("jobs")
+                ?: throw IllegalStateException("jobs array missing")
+            seen = jobs.length()
+            if (seen == 0) {
+                report("OK", "No pending jobs returned")
+                return true
+            }
+
+            for (i in 0 until jobs.length()) {
+                val job = jobs.optJSONObject(i) ?: continue
+                val id = job.optString("id")
+                val phone = job.optString("phone")
+                val message = job.optString("text")
+                if (id.isBlank() || !phone.matches(Regex("\\+?[0-9]{9,15}")) || message.isBlank()) {
+                    stage = "VALIDATE_JOB"
+                    report("ERROR", "Invalid job payload")
+                    continue
+                }
+
+                stage = "CLAIM_JOB"
+                val claim = BridgeApi.authPost(ctx, "/device/claim", JSONObject().put("id", id))
+                if (!claim.optBoolean("claimed")) continue
+                claimed++
+
+                // Never automatically requeue a claimed job: modem outcome may be uncertain.
+                stage = "SEND_SMS"
+                try {
+                    val sms = if (Build.VERSION.SDK_INT >= 31) {
+                        ctx.getSystemService(SmsManager::class.java).createForSubscriptionId(subscription)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        SmsManager.getSmsManagerForSubscriptionId(subscription)
+                    }
+                    val parts = sms.divideMessage(message)
+                    val intents = ArrayList<PendingIntent>()
+                    for (part in parts.indices) {
+                        val sentIntent = Intent(ctx, SentReceiver::class.java).apply {
+                            putExtra("jobId", id)
+                            putExtra("part", part)
+                            putExtra("total", parts.size)
+                            putExtra("token", BridgeStore.token(ctx))
+                        }
+                        intents.add(PendingIntent.getBroadcast(ctx,
+                            (id + ":" + part).hashCode(), sentIntent,
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE))
+                    }
+                    sms.sendMultipartTextMessage(phone, null, parts, intents, null)
+                    dispatched++
+                    BridgeApi.authPost(ctx, "/device/dispatched", JSONObject().put("id", id))
+                } catch (e: Exception) {
+                    try {
+                        BridgeApi.authPost(ctx, "/device/result", JSONObject()
+                            .put("id", id).put("status", "UNKNOWN"))
+                    } catch (_: Exception) { }
+                    report("ERROR", "SMS attempt uncertain: ${e.javaClass.simpleName}")
+                }
+            }
+            stage = "SYNC"
+            report("OK", "Job dispatch attempted; modem result tracked separately")
+            return true
+        } catch (e: Exception) {
+            report("ERROR", "${e.javaClass.simpleName}: ${e.message ?: "no message"}")
+            return false
         }
     }
 }
@@ -71,7 +152,6 @@ class SentReceiver : BroadcastReceiver() {
         val part = intent.getIntExtra("part", -1)
         val total = intent.getIntExtra("total", 0)
         val status = if (resultCode == Activity.RESULT_OK) "MODEM_ACCEPTED" else "FAILED_UNCERTAIN"
-        // Android may terminate the process: keep receiver processing alive until POST finishes.
         val pending = goAsync()
         Thread {
             try {
