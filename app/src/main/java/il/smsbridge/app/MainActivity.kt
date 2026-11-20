@@ -1,3 +1,4 @@
+
 package il.smsbridge.app
 
 import android.Manifest
@@ -421,6 +422,58 @@ class MainActivity : Activity() {
         BridgeWorker.enqueue(this)
     }
 
+    private fun testConnection() {
+        Toast.makeText(
+            this,
+            "בודק חיבור לשרת...",
+            Toast.LENGTH_SHORT
+        ).show()
+
+        thread {
+            val result = StringBuilder()
+
+            try {
+                BridgeApi.authPost(
+                    this,
+                    "/device/heartbeat",
+                    JSONObject()
+                        .put("fcmToken", BridgeStore.fcmToken(this))
+                        .put("enabled", BridgeStore.enabled(this))
+                )
+
+                result.append("Heartbeat: OK\n")
+
+                try {
+                    val response = BridgeApi.get(this, "/device/jobs")
+                    val jobs = response.optJSONArray("jobs")
+
+                    result.append("Jobs API: OK\n")
+                    result.append("Pending jobs: ${jobs?.length() ?: 0}")
+
+                } catch (e: Exception) {
+                    result.append("Jobs API: FAILED\n")
+                    result.append(
+                        "${e.javaClass.simpleName}: ${e.message ?: "Unknown error"}"
+                    )
+                }
+
+            } catch (e: Exception) {
+                result.append("Heartbeat: FAILED\n")
+                result.append(
+                    "${e.javaClass.simpleName}: ${e.message ?: "Unknown error"}"
+                )
+            }
+
+            runOnUiThread {
+                AlertDialog.Builder(this)
+                    .setTitle("תוצאות בדיקת החיבור")
+                    .setMessage(result.toString())
+                    .setPositiveButton("סגור", null)
+                    .show()
+            }
+        }
+    }
+
     private fun showSettings() {
         val items = arrayOf(
             "בדיקת חיבור",
@@ -432,13 +485,7 @@ class MainActivity : Activity() {
             .setItems(items) { _, which ->
 
                 if (which == 0) {
-                    syncFirebaseAndJobs()
-
-                    Toast.makeText(
-                        this,
-                        "נשלחה בקשת בדיקת חיבור",
-                        Toast.LENGTH_SHORT
-                    ).show()
+                    testConnection()
 
                 } else {
                     AlertDialog.Builder(this)
