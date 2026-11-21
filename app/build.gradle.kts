@@ -24,8 +24,8 @@ android {
         applicationId = "il.smsbridge.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "0.3.1"
+        versionCode = 4
+        versionName = "0.4.0"
         buildConfigField("String", "BRIDGE_SERVER_URL", "\"${bridgeServerUrl}\"")
     }
     buildTypes {

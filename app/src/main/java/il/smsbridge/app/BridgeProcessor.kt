@@ -59,6 +59,17 @@ object BridgeProcessor {
                 .put("fcmToken", BridgeStore.fcmToken(ctx))
                 .put("enabled", BridgeStore.enabled(ctx)))
 
+            stage = "CONSENT"
+            if (!BridgeStore.consent(ctx)) {
+                report("BLOCKED", "Explicit consent missing")
+                return true
+            }
+            stage = "APPROVAL"
+            val approval = BridgeApi.get(ctx, "/device/status").optString("status")
+            if (approval != "approved") {
+                report("PENDING", "Waiting for WhatsApp verification: $approval")
+                return true
+            }
             stage = "PRECHECK"
             if (!BridgeStore.enabled(ctx)) {
                 report("BLOCKED", "App disabled")

@@ -9,6 +9,8 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.telephony.SubscriptionManager
 import android.view.Gravity
 import android.view.View
@@ -25,6 +27,91 @@ class MainActivity : Activity() {
     private lateinit var senderInput: EditText
     private lateinit var connectButton: Button
     private var connecting = false
+    private var approvalChecking = false
+    private var lastApproval = false
+    private var visible = false
+    private val pollHandler = Handler(Looper.getMainLooper())
+    private val poll = object : Runnable {
+        override fun run() {
+            if (visible && BridgeStore.token(this@MainActivity).isNotBlank() && BridgeStore.consent(this@MainActivity)) checkApproval()
+            if (visible) pollHandler.postDelayed(this, 12000)
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        visible = true
+        pollHandler.removeCallbacks(poll)
+        pollHandler.post(poll)
+    }
+    override fun onPause() {
+        visible = false
+        pollHandler.removeCallbacks(poll)
+        super.onPause()
+    }
+
+    private fun consentDialog(onApproved: () -> Unit) {
+        AlertDialog.Builder(this)
+            .setTitle("אישור לשליחת SMS מהסים")
+            .setMessage("SMS Bridge תשלח באופן אוטומטי הודעות SMS מהסים שלך לנמענים שהוגדרו על ידי הקבוצה המאושרת. ההודעות מגיעות מהשרת, וייתכנו עלויות SMS לפי חבילת הסלולר שלך. החיבור מחייב אימות WhatsApp, ואפשר לבטל את ההרשאה בהגדרות. האפליקציה אינה קוראת הודעות SMS נכנסות. האם אתה מסכים לשליחה אוטומטית?")
+            .setCancelable(false)
+            .setPositiveButton("אני מאשר שליחת SMS") { _, _ ->
+                BridgeStore.setConsent(this, true)
+                refresh()
+                onApproved()
+            }
+            .setNegativeButton("לא מאשר") { _, _ ->
+                BridgeStore.setConsent(this, false)
+                BridgeStore.setEnabled(this, false)
+                refresh()
+            }
+            .show()
+    }
+
+    private fun checkApproval() {
+        if (approvalChecking || !BridgeStore.consent(this)) return
+        approvalChecking = true
+        thread {
+            val state = try {
+                BridgeApi.get(this, "/device/status").optString("status", "pending")
+            } catch (_: Exception) { "offline" }
+            runOnUiThread {
+                approvalChecking = false
+                if (!::status.isInitialized || BridgeStore.token(this).isBlank() || !BridgeStore.consent(this)) return@runOnUiThread
+                when (state) {
+                    "approved" -> {
+                        if (!BridgeStore.enabled(this) ||
+                            checkSelfPermission(Manifest.permission.SEND_SMS) != PackageManager.PERMISSION_GRANTED ||
+                            SubscriptionManager.getDefaultSmsSubscriptionId() == SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
+                            status.text = "האימות אושר — נדרשת השלמת הרשאות וסים"
+                            details.text = "ודא הרשאת SMS, הסכמה וסִים ברירת מחדל"
+                            return@runOnUiThread
+                        }
+                        status.text = "● מאושר ומוכן לשליחת SMS"
+                        status.setTextColor(accent)
+                        details.text = "מחובר למספר ${BridgeStore.sender(this)}\nאימות WhatsApp הושלם. השליחה האוטומטית פעילה"
+                        if (!lastApproval) { lastApproval = true; BridgeWorker.enqueue(this) }
+                    }
+                    "pending" -> {
+                        lastApproval = false
+                        status.text = "ממתין לאימות WhatsApp"
+                        status.setTextColor(ink)
+                        details.text = "הגב להודעת האימות הפרטית ב-WhatsApp. המסך מתעדכן אוטומטית."
+                    }
+                    "revoked" -> {
+                        lastApproval = false
+                        BridgeStore.setEnabled(this, false)
+                        status.text = "ההרשאה בוטלה בשרת"
+                        details.text = "כדי להתחבר מחדש יש לבצע רישום חדש לאחר ניתוק החיבור."
+                    }
+                    else -> {
+                        status.text = "בודק אישור בשרת..."
+                        details.text = "אין כרגע חיבור לאימות. לא ניתן לקבוע שהמכשיר מאושר."
+                    }
+                }
+            }
+        }
+    }
 
     private val ink = Color.rgb(19, 36, 57)
     private val muted = Color.rgb(101, 117, 137)
@@ -34,9 +121,15 @@ class MainActivity : Activity() {
         super.onCreate(savedInstanceState)
         render()
         BridgeWorker.schedule(this)
-        requestSmsIfNeeded()
         refresh()
-        if (BridgeStore.token(this).isNotBlank()) syncFirebaseAndJobs()
+        if (BridgeStore.token(this).isNotBlank()) {
+            if (!BridgeStore.consent(this)) {
+                consentDialog { requestSmsIfNeeded(); syncFirebaseAndJobs() }
+            } else {
+                requestSmsIfNeeded()
+                syncFirebaseAndJobs()
+            }
+        }
     }
 
     private fun pill(bg: Int, radius: Float = 24f) = GradientDrawable().apply {
@@ -218,9 +311,9 @@ class MainActivity : Activity() {
             SubscriptionManager.getDefaultSmsSubscriptionId() !=
                 SubscriptionManager.INVALID_SUBSCRIPTION_ID
 
-        if (linked && permitted && hasSim) {
+        if (linked && permitted && hasSim && BridgeStore.consent(this)) {
             BridgeStore.setEnabled(this, true)
-            status.text = "● מוכן לשליחת SMS"
+            status.text = "בודק אישור בשרת..."
             status.setTextColor(accent)
             details.text =
                 "מחובר למספר ${BridgeStore.sender(this)}\nשליחה אוטומטית פעילה"
@@ -230,7 +323,9 @@ class MainActivity : Activity() {
             status.text = "נדרשת השלמת הגדרה"
             status.setTextColor(ink)
 
-            details.text = if (!permitted) {
+            details.text = if (!BridgeStore.consent(this)) {
+                "יש לאשר במפורש את השליחה האוטומטית מהסים"
+            } else if (!permitted) {
                 "נדרשת הרשאת SMS"
             } else {
                 "צריך להגדיר SIM ברירת מחדל להודעות במכשיר"
@@ -334,6 +429,10 @@ class MainActivity : Activity() {
 
     private fun register() {
         if (connecting) return
+        if (!BridgeStore.consent(this)) {
+            consentDialog { register() }
+            return
+        }
 
         val sender = normalizedSender(
             senderInput.text.toString()
@@ -383,6 +482,7 @@ class MainActivity : Activity() {
                     connecting = false
                     connectButton.isEnabled = true
                     refresh()
+                    checkApproval()
 
                     if (
                         checkSelfPermission(Manifest.permission.SEND_SMS) !=
@@ -491,13 +591,26 @@ class MainActivity : Activity() {
                     AlertDialog.Builder(this)
                         .setTitle("ניתוק המכשיר?")
                         .setMessage(
-                            "השליחה האוטומטית מהמכשיר תופסק. לביטול הרשאה בשרת יש לפנות למנהל."
+                            "האפליקציה תבטל את ההרשאה גם בשרת. הפעולה דורשת חיבור לאינטרנט."
                         )
                         .setNegativeButton("ביטול", null)
                         .setPositiveButton("נתק") { _, _ ->
                             BridgeStore.setEnabled(this, false)
-                            BridgeStore.clear(this)
-                            render()
+                            BridgeStore.setConsent(this, false)
+                            thread {
+                                try {
+                                    BridgeApi.authPost(this, "/device/revoke", JSONObject())
+                                    BridgeStore.clear(this)
+                                    runOnUiThread { render(); refresh() }
+                                } catch (_: Exception) {
+                                    runOnUiThread {
+                                        AlertDialog.Builder(this)
+                                            .setTitle("הניתוק נעצר")
+                                            .setMessage("השליחה בטלפון הושהתה. לא ניתן כרגע לבטל את ההרשאה בשרת; נסה שוב כשיש אינטרנט.")
+                                            .setPositiveButton("סגור", null).show()
+                                    }
+                                }
+                            }
                         }
                         .show()
                 }
