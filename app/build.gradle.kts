@@ -7,15 +7,32 @@ if (file("google-services.json").exists()) {
 }
 val bridgeServerUrl = providers.gradleProperty("BRIDGE_SERVER_URL").orElse("").get()
 android {
+    signingConfigs {
+        create("release") {
+            val signingPath = System.getenv("ANDROID_KEYSTORE_PATH")
+            if (!signingPath.isNullOrBlank()) {
+                storeFile = file(signingPath)
+                storePassword = System.getenv("ANDROID_SIGNING_PASSWORD")
+                keyAlias = "smsbridge"
+                keyPassword = System.getenv("ANDROID_SIGNING_PASSWORD")
+            }
+        }
+    }
     namespace = "il.smsbridge.app"
     compileSdk = 35
     defaultConfig {
         applicationId = "il.smsbridge.app"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "0.3.0"
+        versionCode = 3
+        versionName = "0.3.1"
         buildConfigField("String", "BRIDGE_SERVER_URL", "\"${bridgeServerUrl}\"")
+    }
+    buildTypes {
+        getByName("release") {
+            isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
+        }
     }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
