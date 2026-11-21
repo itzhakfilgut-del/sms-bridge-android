@@ -68,10 +68,9 @@ object BridgeProcessor {
                 report("BLOCKED", "SEND_SMS permission missing")
                 return true
             }
-            if (!ctx.packageManager.hasSystemFeature(PackageManager.FEATURE_TELEPHONY_MESSAGING)) {
-                report("BLOCKED", "FEATURE_TELEPHONY_MESSAGING missing")
-                return true
-            }
+            // Do not block on FEATURE_TELEPHONY_MESSAGING: some working SMS devices
+            // (including Android 12) do not advertise this PackageManager feature.
+            // Permission + default SIM are checked; SmsManager reports actual send failures.
             val subscription = SubscriptionManager.getDefaultSmsSubscriptionId()
             if (subscription == SubscriptionManager.INVALID_SUBSCRIPTION_ID) {
                 report("BLOCKED", "Default SMS SIM missing")
